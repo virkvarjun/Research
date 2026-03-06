@@ -29,6 +29,11 @@ fi
 
 conda activate lerobot
 
+echo "=== [3.5/5] Installing system deps for headless MuJoCo ==="
+apt-get update -qq && apt-get install -y -qq libegl1-mesa-dev libgl1-mesa-dev libgles2-mesa-dev xvfb > /dev/null 2>&1
+echo 'export MUJOCO_GL=egl' >> ~/.bashrc
+export MUJOCO_GL=egl
+
 echo "=== [4/5] Installing lerobot with hilserl ==="
 cd /root/Research/lerobot
 pip install -e ".[hilserl]"
