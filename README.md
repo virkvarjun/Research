@@ -359,14 +359,56 @@ ACT → monitor → intervention → replanning
 
 ---
 
+# Current Status: Simulation Experiments
+
+## Environment Setup (RunPod GPU — NVIDIA L40S)
+
+All simulation environments are verified and running on a remote RunPod GPU:
+
+| Environment | Task | Status |
+|---|---|---|
+| `AlohaTransferCube-v0` | Bimanual pick-and-place (cube transfer) | Training |
+| `AlohaInsertion-v0` | Bimanual peg insertion | Ready |
+| `PandaPickCube-v0` | Single-arm pick cube (Franka Panda) | Ready |
+| `PandaArrangeBoxes-v0` | Single-arm arrange boxes (Franka Panda) | Ready |
+
+## Training Pipeline
+
+**Step 1 — Baseline ACT** (in progress):
+```bash
+# On RunPod GPU:
+bash scripts/train_sim.sh transfer_cube 100000 8
+```
+
+Training ACT on 50 human demonstrations from `lerobot/aloha_sim_transfer_cube_human`.
+Checkpoints saved every 20K steps with automatic evaluation.
+
+**Step 2 — Evaluate baseline:**
+```bash
+bash scripts/eval_sim.sh transfer_cube last 10
+```
+
+## Challenges Log
+
+1. **Pre-trained model incompatibility**: The HuggingFace model `lerobot/act_aloha_sim_transfer_cube_human` was trained with an older LeRobot version and lacks `policy_preprocessor.json`. Cannot evaluate directly; must train from scratch.
+2. **Headless rendering**: RunPod containers have no display. Required `MUJOCO_GL=egl` + EGL system libraries for MuJoCo to render offscreen.
+3. **FFmpeg missing**: `torchcodec` (video decoder for training datasets) requires FFmpeg shared libraries not present on RunPod by default.
+4. **shimmy compatibility**: `gym-aloha` uses older Gym v0.26 API; needed `shimmy[gym-v26]` as a compatibility bridge to Gymnasium.
+5. **SSH PTY requirement**: RunPod SSH rejects connections without PTY allocation. Required `-tt` flag and pipe-based command execution.
+
+---
+
 # Installation
 
 ```bash
-git clone https://github.com/virkvarjun/Research.git
-
+git clone --recurse-submodules https://github.com/virkvarjun/Research.git
 cd Research
 
-pip install -r requirements.txt
+# Local development (macOS)
+pip install -e lerobot
+
+# Remote GPU (RunPod)
+bash setup_runpod.sh
 ```
 
 ---
@@ -376,7 +418,9 @@ pip install -r requirements.txt
 ```
 PyTorch
 Transformers
-Robotics simulator (Isaac / PyBullet / MuJoCo)
+MuJoCo (headless via EGL)
+Gymnasium + gym-aloha + gym-hil
+FFmpeg (for torchcodec)
 NumPy
 OpenCV
 ```
