@@ -40,6 +40,18 @@ from failure_prediction.utils.failure_dataset_logger import FailureDatasetLogger
 from failure_prediction.utils.success_inference import infer_episode_outcome
 
 
+def extract_obs_images(obs: dict) -> dict[str, np.ndarray]:
+    """Return image observations in a flat dict keyed by camera name."""
+    images = {}
+    raw_pixels = obs.get("pixels")
+    if isinstance(raw_pixels, dict):
+        for key, value in raw_pixels.items():
+            images[str(key)] = np.asarray(value)
+    elif raw_pixels is not None:
+        images["main"] = np.asarray(raw_pixels)
+    return images
+
+
 def parse_args():
     p = argparse.ArgumentParser(description="Collect failure prediction dataset from ACT rollouts")
     p.add_argument("--checkpoint", type=str, required=True,
@@ -273,8 +285,13 @@ def run_collection(args):
                 reward=float(reward),
                 done=done,
                 success=success_this_step,
+                terminated=bool(terminated),
+                truncated=bool(truncated),
                 obs_state=obs_state,
+                obs_images=extract_obs_images(raw_obs) if args.save_images else None,
+                env_info=deepcopy(info),
                 predicted_action_chunk=chunk_np,
+                chunk_length=current_chunk.shape[1] if current_chunk is not None else None,
                 chunk_step_idx=chunk_step_idx,
                 new_chunk_generated=new_chunk,
                 features=current_features if new_chunk else None,
@@ -301,6 +318,7 @@ def run_collection(args):
         dataset_logger.end_episode(
             success=outcome["success"],
             termination_reason=outcome["termination_reason"],
+            terminal_step=outcome["terminal_step"],
         )
         dataset_logger.save_episode()
 

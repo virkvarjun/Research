@@ -76,8 +76,13 @@ class FailureDatasetLogger:
         reward: float,
         done: bool,
         success: bool,
+        terminated: bool | None = None,
+        truncated: bool | None = None,
         obs_state: np.ndarray | None = None,
+        obs_images: dict[str, np.ndarray] | None = None,
+        env_info: dict | None = None,
         predicted_action_chunk: np.ndarray | None = None,
+        chunk_length: int | None = None,
         chunk_step_idx: int = 0,
         new_chunk_generated: bool = False,
         features: dict[str, np.ndarray] | None = None,
@@ -102,12 +107,22 @@ class FailureDatasetLogger:
             "reward": float(reward),
             "done": bool(done),
             "success": bool(success),
+            "terminated": bool(terminated) if terminated is not None else False,
+            "truncated": bool(truncated) if truncated is not None else False,
+            "env_info_json": json.dumps(env_info or {}, default=str),
+            "chunk_length": int(chunk_length) if chunk_length is not None else -1,
             "chunk_step_idx": int(chunk_step_idx),
             "new_chunk_generated": bool(new_chunk_generated),
         }
 
         if self.save_obs_state and obs_state is not None:
             step["obs_state"] = np.asarray(obs_state, dtype=np.float32)
+
+        if self.save_images and obs_images:
+            for key, image in obs_images.items():
+                if image is None:
+                    continue
+                step[f"image_{key}"] = np.asarray(image)
 
         if self.save_action_chunks and predicted_action_chunk is not None:
             step["predicted_action_chunk"] = np.asarray(predicted_action_chunk, dtype=np.float32)
@@ -119,14 +134,19 @@ class FailureDatasetLogger:
 
         self._step_data.append(step)
 
-    def end_episode(self, success: bool, termination_reason: str):
+    def end_episode(self, success: bool, termination_reason: str, terminal_step: int | None = None):
         """Finalize episode metadata."""
         self._episode_meta["success"] = success
         self._episode_meta["episode_failed"] = not success
         self._episode_meta["termination_reason"] = termination_reason
         self._episode_meta["num_steps"] = len(self._step_data)
+        self._episode_meta["terminal_step"] = (
+            int(terminal_step) if terminal_step is not None else max(len(self._step_data) - 1, 0)
+        )
         self._episode_meta["end_time"] = time.time()
-        self._episode_meta["total_reward"] = sum(s["reward"] for s in self._step_data)
+        episode_return = sum(s["reward"] for s in self._step_data)
+        self._episode_meta["return"] = episode_return
+        self._episode_meta["total_reward"] = episode_return
 
     def save_episode(self) -> Path:
         """Serialize the current episode to disk as .npz and return the file path."""
