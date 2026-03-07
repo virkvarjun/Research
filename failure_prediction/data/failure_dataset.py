@@ -78,6 +78,7 @@ def load_processed_dataset(processed_dir: str | Path) -> tuple[dict, dict]:
 def load_failure_dataset(
     processed_dir: str | Path | None = None,
     feature_field: str = "feat_decoder_mean",
+    feature_fields: list[str] | None = None,
     label_field: str = "failure_within_k",
     mock: bool = False,
     mock_num_episodes: int = 50,
@@ -90,7 +91,8 @@ def load_failure_dataset(
 
     Args:
         processed_dir: Path to processed dataset directory (required if mock=False).
-        feature_field: Name of feature array to use (e.g. feat_decoder_mean, feat_latent_sample).
+        feature_field: Single feature field (used if feature_fields is None).
+        feature_fields: Multiple feature fields to concatenate (overrides feature_field).
         label_field: Name of label array (default: failure_within_k).
         mock: If True, generate synthetic data instead of loading from disk.
         mock_*: Parameters for synthetic data generation.
@@ -111,13 +113,14 @@ def load_failure_dataset(
         raise ValueError("processed_dir is required when mock=False")
 
     data, metadata = load_processed_dataset(processed_dir)
+    fields_to_use = feature_fields if feature_fields else [feature_field]
+    available = get_available_feature_fields(data)
 
-    if feature_field not in data:
-        available = get_available_feature_fields(data)
-        raise ValueError(
-            f"Feature field '{feature_field}' not found. "
-            f"Available: {available}"
-        )
+    for f in fields_to_use:
+        if f not in data:
+            raise ValueError(
+                f"Feature field '{f}' not found. Available: {available}"
+            )
 
     if label_field not in data:
         raise ValueError(
@@ -125,7 +128,13 @@ def load_failure_dataset(
             f"Available: {list(k for k in data if k not in LABEL_AND_META_KEYS or k == 'failure_within_k')}"
         )
 
-    features = np.asarray(data[feature_field], dtype=np.float32)
+    parts = []
+    for f in fields_to_use:
+        arr = np.asarray(data[f], dtype=np.float32)
+        if arr.ndim == 1:
+            arr = arr.reshape(-1, 1)
+        parts.append(arr)
+    features = np.concatenate(parts, axis=1)
     labels = np.asarray(data[label_field], dtype=np.float32)
     episode_ids = np.asarray(data["episode_id"], dtype=np.int64)
     timesteps = np.asarray(data["timestep"], dtype=np.int64) if "timestep" in data else np.arange(len(labels))
@@ -147,7 +156,8 @@ def load_failure_dataset(
         raise ValueError("Labels contain NaN or Inf")
 
     input_dim = features.shape[1]
-    metadata["feature_field"] = feature_field
+    metadata["feature_field"] = fields_to_use[0] if len(fields_to_use) == 1 else None
+    metadata["feature_fields"] = fields_to_use
     metadata["label_field"] = label_field
     metadata["input_dim"] = input_dim
     metadata["n_samples"] = n
