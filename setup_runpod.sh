@@ -31,12 +31,19 @@ conda activate lerobot
 
 echo "=== [3.5/5] Installing system deps for headless MuJoCo ==="
 apt-get update -qq && apt-get install -y -qq libegl1-mesa-dev libgl1-mesa-dev libgles2-mesa-dev xvfb > /dev/null 2>&1
-echo 'export MUJOCO_GL=egl' >> ~/.bashrc
+
+# ffmpeg libs required by torchcodec for video decoding during training
+apt-get install -y -qq ffmpeg libavutil-dev libavcodec-dev libavformat-dev libswscale-dev > /dev/null 2>&1
+
+grep -q "MUJOCO_GL" ~/.bashrc || echo 'export MUJOCO_GL=egl' >> ~/.bashrc
 export MUJOCO_GL=egl
 
-echo "=== [4/5] Installing lerobot with hilserl ==="
+echo "=== [4/5] Installing lerobot with hilserl + aloha ==="
 cd /root/Research/lerobot
-pip install -e ".[hilserl]"
+pip install -e ".[hilserl,aloha]"
+
+# shimmy for gymnasium <-> gym v26 compatibility (needed by gym-aloha)
+pip install "shimmy[gym-v26]"
 
 echo "=== [5/5] Verifying installation ==="
 python -c "
@@ -55,11 +62,14 @@ print('  PyTorch:      ' + torch.__version__)
 print('  CUDA:         ' + str(torch.cuda.is_available()))
 if torch.cuda.is_available():
     print('  GPU:          ' + torch.cuda.get_device_name(0))
-    print('  VRAM:         ' + str(round(torch.cuda.get_device_properties(0).total_mem / 1e9, 1)) + ' GB')
+    print('  VRAM:         ' + str(round(torch.cuda.get_device_properties(0).total_memory / 1e9, 1)) + ' GB')
 print('  MuJoCo:       ' + mujoco.__version__)
 print('  Gymnasium:    ' + gymnasium.__version__)
 print('  Transformers: ' + transformers.__version__)
-print('  LeRobot:      ' + lerobot.__version__)
+from importlib.metadata import version as pkg_version
+print('  LeRobot:      ' + pkg_version('lerobot'))
+print('  gym-aloha:    ' + pkg_version('gym-aloha'))
+print('  gym-hil:      ' + pkg_version('gym-hil'))
 "
 
 echo "=== SETUP COMPLETE ==="
