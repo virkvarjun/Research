@@ -25,7 +25,7 @@
   "env": {
     "type": "gym_manipulator",
     "name": "gym_hil",
-    "task": "PandaPickCubeBase-v0",
+    "task": "PandaPickCube-v0",
     "fps": 10,
     "robot": null,
     "teleop": null,
