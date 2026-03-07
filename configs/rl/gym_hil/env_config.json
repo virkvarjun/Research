@@ -1,7 +1,7 @@
 {
   "env": {
     "name": "gym_hil",
-    "task": "PandaPickCube-v0",
+    "task": "PandaPickCubeKeyboard-v0",
     "fps": 10,
     "robot": null,
     "teleop": null,
