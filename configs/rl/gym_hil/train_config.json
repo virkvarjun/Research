@@ -33,8 +33,7 @@
       "control_mode": "base",
       "gripper": {
         "use_gripper": true,
-        "gripper_penalty": -0.02,
-        "gripper_penalty_in_reward": false
+        "gripper_penalty": -0.02
       },
       "reset": {
         "fixed_reset_joint_positions": [0.0, 0.195, 0.0, -2.43, 0.0, 2.62, 0.785],
