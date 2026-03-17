@@ -129,6 +129,91 @@ def compute_binary_metrics(
     return result
 
 
+def logits_to_probs(logits: np.ndarray) -> np.ndarray:
+    """Convert logits to probabilities with clipping for numerical stability."""
+    logits = np.asarray(logits, dtype=np.float64)
+    return 1.0 / (1.0 + np.exp(-np.clip(logits, -500, 500)))
+
+
+def threshold_sweep(
+    logits: np.ndarray,
+    labels: np.ndarray,
+    thresholds: np.ndarray | None = None,
+) -> dict[str, Any]:
+    """Evaluate a dense grid of thresholds and report the best operating points."""
+    if thresholds is None:
+        thresholds = np.linspace(0.05, 0.95, 19, dtype=np.float64)
+    rows = []
+    best_f1 = None
+    best_balanced_accuracy = None
+    for threshold in thresholds:
+        metrics = compute_binary_metrics(logits, labels, threshold=float(threshold))
+        balanced_accuracy = 0.5 * (
+            _safe_divide(metrics["tp"], metrics["tp"] + metrics["fn"], 0.0)
+            + _safe_divide(metrics["tn"], metrics["tn"] + metrics["fp"], 0.0)
+        )
+        row = {
+            "threshold": float(threshold),
+            "f1": float(metrics["f1"]),
+            "precision": float(metrics["precision"]),
+            "recall": float(metrics["recall"]),
+            "accuracy": float(metrics["accuracy"]),
+            "balanced_accuracy": float(balanced_accuracy),
+        }
+        rows.append(row)
+        if best_f1 is None or row["f1"] > best_f1["f1"]:
+            best_f1 = row
+        if best_balanced_accuracy is None or row["balanced_accuracy"] > best_balanced_accuracy["balanced_accuracy"]:
+            best_balanced_accuracy = row
+    return {
+        "rows": rows,
+        "best_f1": best_f1 or {},
+        "best_balanced_accuracy": best_balanced_accuracy or {},
+    }
+
+
+def compute_calibration_summary(
+    logits: np.ndarray,
+    labels: np.ndarray,
+    n_bins: int = 10,
+) -> dict[str, Any]:
+    """Compute a simple reliability summary with expected calibration error."""
+    probs = logits_to_probs(logits).ravel()
+    labels = np.asarray(labels, dtype=np.float64).ravel()
+    if len(probs) == 0:
+        return {"bins": [], "ece": 0.0, "brier_score": 0.0}
+
+    bin_edges = np.linspace(0.0, 1.0, n_bins + 1, dtype=np.float64)
+    bins = []
+    ece = 0.0
+    for idx in range(n_bins):
+        lo = bin_edges[idx]
+        hi = bin_edges[idx + 1]
+        if idx == n_bins - 1:
+            mask = (probs >= lo) & (probs <= hi)
+        else:
+            mask = (probs >= lo) & (probs < hi)
+        count = int(mask.sum())
+        if count == 0:
+            continue
+        conf = float(probs[mask].mean())
+        acc = float(labels[mask].mean())
+        gap = abs(acc - conf)
+        ece += gap * (count / len(probs))
+        bins.append(
+            {
+                "bin_start": float(lo),
+                "bin_end": float(hi),
+                "count": count,
+                "mean_confidence": conf,
+                "empirical_positive_rate": acc,
+                "calibration_gap": float(gap),
+            }
+        )
+    brier = float(np.mean((probs - labels) ** 2))
+    return {"bins": bins, "ece": float(ece), "brier_score": brier}
+
+
 def confusion_matrix_counts(tp: int, tn: int, fp: int, fn: int) -> dict[str, int]:
     """Return confusion matrix as dict."""
     return {"tp": tp, "tn": tn, "fp": fp, "fn": fn}
