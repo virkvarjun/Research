@@ -25,12 +25,36 @@ import numpy as np
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
+
+def _build_remaining_prefix_features(
+    predicted_chunks: np.ndarray,
+    chunk_step_idx: np.ndarray,
+    prefix_steps: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    n_steps, chunk_len, action_dim = predicted_chunks.shape
+    prefixes = np.zeros((n_steps, prefix_steps, action_dim), dtype=np.float32)
+    for step in range(n_steps):
+        start = int(np.clip(chunk_step_idx[step], 0, max(chunk_len - 1, 0)))
+        window = predicted_chunks[step, start : start + prefix_steps]
+        if len(window) == 0:
+            continue
+        prefixes[step, : len(window)] = window
+        if len(window) < prefix_steps:
+            prefixes[step, len(window) :] = window[-1]
+    return (
+        prefixes[:, 0, :],
+        prefixes.mean(axis=1),
+        prefixes.reshape(n_steps, -1),
+    )
+
 SCRIPT_DIR = Path(__file__).resolve().parent
 RESEARCH_DIR = SCRIPT_DIR.parent.parent
 sys.path.insert(0, str(RESEARCH_DIR))
+sys.path.insert(0, str(RESEARCH_DIR / "faact"))
 
 from failure_prediction.utils.failure_dataset_logger import FailureDatasetLogger
 from failure_prediction.utils.failure_labeling import label_failure_windows
+from faact.backbone.features import ACTION_PREFIX_STEPS
 
 
 def parse_args():
@@ -184,6 +208,22 @@ def process_episodes(
             result[key] = np.concatenate(val_list, axis=0)  # stack episodes vertically
         except ValueError:
             logger.warning(f"Skipping array field '{key}' due to inconsistent shapes")
+
+    predicted_chunks = result.get("predicted_action_chunk")
+    if isinstance(predicted_chunks, np.ndarray) and predicted_chunks.ndim == 3 and predicted_chunks.shape[1] > 0:
+        prefix = predicted_chunks[:, : min(ACTION_PREFIX_STEPS, predicted_chunks.shape[1]), :].astype(np.float32, copy=False)
+        result.setdefault("feat_action_first", predicted_chunks[:, 0, :].astype(np.float32, copy=False))
+        result.setdefault(f"feat_action_prefix_mean_{ACTION_PREFIX_STEPS}", prefix.mean(axis=1))
+        result.setdefault(f"feat_action_prefix_flat_{ACTION_PREFIX_STEPS}", prefix.reshape(prefix.shape[0], -1))
+        if "chunk_step_idx" in result:
+            remaining_first, remaining_mean, remaining_flat = _build_remaining_prefix_features(
+                predicted_chunks.astype(np.float32, copy=False),
+                np.asarray(result["chunk_step_idx"], dtype=np.int64),
+                ACTION_PREFIX_STEPS,
+            )
+            result.setdefault("feat_action_remaining_first", remaining_first)
+            result.setdefault(f"feat_action_remaining_prefix_mean_{ACTION_PREFIX_STEPS}", remaining_mean)
+            result.setdefault(f"feat_action_remaining_prefix_flat_{ACTION_PREFIX_STEPS}", remaining_flat)
 
     return result
 
