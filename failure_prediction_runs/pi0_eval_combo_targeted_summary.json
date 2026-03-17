@@ -1,0 +1,59 @@
+{
+  "seed": 200,
+  "runs": [
+    {
+      "run": "failure_prediction_runs/pi0_eval_combo_hybrid_t055_n12_m002_cap2_s200",
+      "success_rate": 0.0,
+      "n_success": 0,
+      "total_interventions": 9,
+      "accepted_intervention_rate": 0.9,
+      "better_candidate_available_rate": 0.9,
+      "mean_best_candidate_risk_delta": -0.13907344299000535
+    },
+    {
+      "run": "failure_prediction_runs/pi0_eval_combo_hybrid_t060_n8_m002_cap2_s200",
+      "success_rate": 0.0,
+      "n_success": 0,
+      "total_interventions": 8,
+      "accepted_intervention_rate": 1.0,
+      "better_candidate_available_rate": 1.0,
+      "mean_best_candidate_risk_delta": -0.12548200703903584
+    },
+    {
+      "run": "failure_prediction_runs/pi0_eval_combo_hybrid_t055_n12_m000_cap2_s200",
+      "success_rate": 0.0,
+      "n_success": 0,
+      "total_interventions": 12,
+      "accepted_intervention_rate": 0.8571428571428571,
+      "better_candidate_available_rate": 0.8571428571428571,
+      "mean_best_candidate_risk_delta": -0.16064497583430085
+    },
+    {
+      "run": "failure_prediction_runs/pi0_eval_combof1_hybrid_t055_n8_m002_cap2_s200",
+      "success_rate": 0.0,
+      "n_success": 0,
+      "total_interventions": 17,
+      "accepted_intervention_rate": 0.8947368421052632,
+      "better_candidate_available_rate": 0.9473684210526315,
+      "mean_best_candidate_risk_delta": -0.16499917639474562
+    },
+    {
+      "run": "failure_prediction_runs/pi0_eval_combof1_hybrid_t060_n12_m002_cap2_s200",
+      "success_rate": 0.0,
+      "n_success": 0,
+      "total_interventions": 10,
+      "accepted_intervention_rate": 0.9090909090909091,
+      "better_candidate_available_rate": 0.9090909090909091,
+      "mean_best_candidate_risk_delta": -0.1479072684898533
+    },
+    {
+      "run": "failure_prediction_runs/pi0_eval_combof1_hybrid_t055_n12_m002_cap2_s200",
+      "success_rate": 0.0,
+      "n_success": 0,
+      "total_interventions": 18,
+      "accepted_intervention_rate": 1.0,
+      "better_candidate_available_rate": 1.0,
+      "mean_best_candidate_risk_delta": -0.22095124504823394
+    }
+  ]
+}
