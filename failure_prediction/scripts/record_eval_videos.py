@@ -21,24 +21,19 @@ import sys
 from pathlib import Path
 
 import numpy as np
-import torch
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 RESEARCH_DIR = SCRIPT_DIR.parent.parent
 sys.path.insert(0, str(RESEARCH_DIR))
+sys.path.insert(0, str(RESEARCH_DIR / "faact"))
 
 from failure_prediction.scripts.run_failure_aware_eval import (
     load_risk_model,
-    add_obs_noise,
 )
-from failure_prediction.scripts.collect_failure_dataset import (
-    load_policy_and_processors,
-    make_single_env,
-    preprocess_obs,
-    predict_action_chunk_with_features,
-    features_to_numpy,
-)
-from failure_prediction.utils.success_inference import infer_episode_outcome
+from failure_prediction.runtime_components import ThresholdInterventionPolicy
+from failure_prediction.scripts.collect_failure_dataset import make_single_env
+from faact.backbone.factory import make_backbone_wrapper
+from faact.evaluation.online_runner import EpisodeRunnerConfig, run_episode as run_wrapper_episode
 
 
 def get_frame(env, obs=None):
@@ -69,106 +64,37 @@ def get_frame(env, obs=None):
 
 def run_episode_with_frames(
     env,
-    policy,
-    preprocessor,
-    postprocessor,
-    n_action_steps: int,
-    device: str,
-    risk_model,
-    risk_key: str,
+    backbone,
+    risk_scorer,
+    intervention_policy,
     risk_threshold: float,
     num_candidate_chunks: int,
     obs_noise_std: float,
     seed: int,
+    task_desc: str | None = None,
 ) -> tuple[dict, list[np.ndarray]]:
     """Run one episode in intervention mode, return result and frames."""
     rng = np.random.default_rng(seed)
-    policy.reset()
-    raw_obs, info = env.reset(seed=int(seed))
-    frames = [get_frame(env, raw_obs)]
-    current_chunk = None
-    chunk_step_idx = 0
-    max_ep_steps = env.spec.max_episode_steps or 400
-
-    episode_rewards = []
-    episode_successes = []
-    episode_dones = []
-    episode_terminated = []
-    episode_truncated = []
-    interventions = []
-
-    done = False
-    step = 0
-
-    while not done and step < max_ep_steps:
-        obs_dict = preprocess_obs(raw_obs)
-        obs_processed = preprocessor(obs_dict)
-        need_new_chunk = (current_chunk is None) or (chunk_step_idx >= n_action_steps)
-
-        if need_new_chunk:
-            action_chunk, features = predict_action_chunk_with_features(policy, obs_processed)
-            feat_np = features_to_numpy(features)
-            feat_vec = feat_np.get(risk_key)
-            risk_prob = 0.0
-            if risk_model is not None and feat_vec is not None:
-                with torch.no_grad():
-                    x = torch.from_numpy(feat_vec).float().unsqueeze(0).to(device)
-                    logit = risk_model(x).cpu().item()
-                    risk_prob = 1.0 / (1.0 + np.exp(-np.clip(logit, -500, 500)))
-                if risk_prob >= risk_threshold:
-                    candidates = []
-                    for _ in range(num_candidate_chunks):
-                        noisy_obs = add_obs_noise(raw_obs, noise_std=obs_noise_std, rng=rng)
-                        noisy_dict = preprocess_obs(noisy_obs)
-                        noisy_processed = preprocessor(noisy_dict)
-                        chunk_cand, feat_cand = predict_action_chunk_with_features(policy, noisy_processed)
-                        feat_cand_np = features_to_numpy(feat_cand)
-                        fv = feat_cand_np.get(risk_key)
-                        if fv is not None:
-                            with torch.no_grad():
-                                xc = torch.from_numpy(fv).float().unsqueeze(0).to(device)
-                                lc = risk_model(xc).cpu().item()
-                                pc = 1.0 / (1.0 + np.exp(-np.clip(lc, -500, 500)))
-                            candidates.append((chunk_cand, pc))
-                    if candidates:
-                        best_idx = np.argmin([c[1] for c in candidates])
-                        action_chunk = candidates[best_idx][0]
-                        interventions.append({"step": step})
-            current_chunk = action_chunk
-            chunk_step_idx = 0
-
-        action = current_chunk[:, chunk_step_idx]
-        action = postprocessor(action)
-        action_np = action.detach().cpu().numpy()
-        if action_np.ndim == 2:
-            action_np = action_np[0]
-
-        raw_obs, reward, terminated, truncated, info = env.step(action_np)
-        frames.append(get_frame(env, raw_obs))
-        success_this_step = bool(info.get("is_success", False))
-        done = terminated or truncated
-
-        episode_rewards.append(float(reward))
-        episode_successes.append(success_this_step)
-        episode_dones.append(done)
-        episode_terminated.append(terminated)
-        episode_truncated.append(truncated)
-        chunk_step_idx += 1
-        step += 1
-
-    outcome = infer_episode_outcome(
-        rewards=np.array(episode_rewards),
-        successes=np.array(episode_successes),
-        dones=np.array(episode_dones),
-        terminated=np.array(episode_terminated),
-        truncated=np.array(episode_truncated),
-        env_name=env.unwrapped.spec.id if hasattr(env, "unwrapped") else "",
+    config = EpisodeRunnerConfig(
+        mode="intervention",
+        num_candidate_chunks=num_candidate_chunks,
+        obs_noise_std=obs_noise_std,
+        task_desc=task_desc,
     )
-
+    result, frames = run_wrapper_episode(
+        env=env,
+        backbone=backbone,
+        rng=rng,
+        risk_scorer=risk_scorer,
+        intervention_policy=intervention_policy,
+        config=config,
+        capture_frames=True,
+        frame_fn=get_frame,
+    )
     return {
-        "success": outcome["success"],
-        "n_interventions": len(interventions),
-    }, frames
+        "success": result["success"],
+        "n_interventions": result["n_interventions"],
+    }, frames or []
 
 
 def _draw_label_on_frame(frame: np.ndarray, label: str) -> np.ndarray:
@@ -263,8 +189,9 @@ def main():
     args = p.parse_args()
 
     importlib.import_module(f"gym_{args.env_type}")
-    policy, preprocessor, postprocessor = load_policy_and_processors(args.checkpoint, args.device)
-    risk_model, risk_key = load_risk_model(Path(args.risk_model_ckpt), args.device)
+    backbone = make_backbone_wrapper("act", args.checkpoint, device=args.device)
+    risk_scorer, _risk_key = load_risk_model(Path(args.risk_model_ckpt), args.device)
+    intervention_policy = ThresholdInterventionPolicy(args.risk_threshold)
     env = make_single_env(args.task, args.env_type)
 
     out_dir = Path(args.output_dir)
@@ -276,10 +203,14 @@ def main():
     for ep in range(args.max_episodes):
         seed = int(rng.integers(0, 2**31))
         result, frames = run_episode_with_frames(
-            env, policy, preprocessor, postprocessor,
-            policy.config.n_action_steps, args.device,
-            risk_model, risk_key, args.risk_threshold,
-            args.num_candidate_chunks, 0.03, seed,
+            env=env,
+            backbone=backbone,
+            risk_scorer=risk_scorer,
+            intervention_policy=intervention_policy,
+            risk_threshold=args.risk_threshold,
+            num_candidate_chunks=args.num_candidate_chunks,
+            obs_noise_std=0.03,
+            seed=seed,
         )
         success = result["success"]
         n_int = result["n_interventions"]
