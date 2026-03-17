@@ -35,7 +35,11 @@ sys.path.insert(0, str(RESEARCH_DIR))
 from failure_prediction.data.failure_dataset import load_failure_dataset
 from failure_prediction.data.splits import create_episode_splits, split_summary
 from failure_prediction.models.failure_predictor import FailurePredictorMLP
-from failure_prediction.utils.eval_metrics import compute_binary_metrics
+from failure_prediction.utils.eval_metrics import (
+    compute_binary_metrics,
+    compute_calibration_summary,
+    threshold_sweep,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -46,7 +50,15 @@ def parse_args():
     p.add_argument("--mock_data", action="store_true", help="Use synthetic mock dataset")
     p.add_argument("--processed_dir", type=str, default=None, help="Processed dataset directory")
     p.add_argument("--feature_field", type=str, default="feat_decoder_mean")
+    p.add_argument(
+        "--feature_fields",
+        type=str,
+        default="",
+        help="Comma-separated feature fields to concatenate. Overrides --feature_field.",
+    )
     p.add_argument("--label_field", type=str, default="failure_within_k")
+    p.add_argument("--decision_only", action="store_true",
+                   help="Train/evaluate only on chunk-boundary decision rows")
     p.add_argument("--output_dir", type=str, default="failure_prediction_runs/default")
     p.add_argument("--run_name", type=str, default=None, help="Subdir under output_dir")
     p.add_argument("--epochs", type=int, default=20)
@@ -54,6 +66,13 @@ def parse_args():
     p.add_argument("--lr", type=float, default=1e-3)
     p.add_argument("--hidden_dims", type=str, default="256,128", help="Comma-separated")
     p.add_argument("--dropout", type=float, default=0.1)
+    p.add_argument(
+        "--selection_metric",
+        type=str,
+        default="auroc",
+        choices=["auroc", "auprc", "f1"],
+        help="Validation metric used to select best_model.pt",
+    )
     p.add_argument("--train_frac", type=float, default=0.7)
     p.add_argument("--val_frac", type=float, default=0.15)
     p.add_argument("--test_frac", type=float, default=0.15)
@@ -78,11 +97,17 @@ def main():
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
 
+    feature_fields = [field.strip() for field in args.feature_fields.split(",") if field.strip()]
+    if not feature_fields:
+        feature_fields = None
+
     # load_failure_dataset: processed dir or mock. Episode-level splits to avoid leakage.
     features, labels, episode_ids, timesteps, input_dim, metadata = load_failure_dataset(
         processed_dir=args.processed_dir,
         feature_field=args.feature_field,
+        feature_fields=feature_fields,
         label_field=args.label_field,
+        decision_only=args.decision_only,
         mock=args.mock_data,
         mock_num_episodes=args.num_mock_episodes,
         mock_timesteps_per_episode=args.timesteps_per_episode,
@@ -140,8 +165,10 @@ def main():
     config = {
         "mock_data": args.mock_data,
         "processed_dir": str(args.processed_dir) if args.processed_dir else None,
-        "feature_field": args.feature_field,
+        "feature_field": metadata.get("feature_field", args.feature_field),
+        "feature_fields": metadata.get("feature_fields", feature_fields or [args.feature_field]),
         "label_field": args.label_field,
+        "decision_only": args.decision_only,
         "input_dim": input_dim,
         "hidden_dims": hidden_dims,
         "dropout": args.dropout,
@@ -150,6 +177,7 @@ def main():
         "lr": args.lr,
         "seed": args.seed,
         "pos_weight": pos_weight,
+        "selection_metric": args.selection_metric,
     }
     with open(out_dir / "config.json", "w") as f:
         json.dump(config, f, indent=2)
@@ -157,7 +185,7 @@ def main():
     with open(out_dir / "split_summary.json", "w") as f:
         json.dump(split_stats, f, indent=2)
 
-    best_val_auroc = -1.0
+    best_val_score = -1.0
     metrics_history = []  # AUROC/AUPRC per epoch
 
     for epoch in range(args.epochs):
@@ -203,8 +231,9 @@ def main():
             f"val_f1={val_metrics['f1']:.4f}"
         )
 
-        if val_metrics["auroc"] > best_val_auroc:
-            best_val_auroc = val_metrics["auroc"]
+        val_score = float(val_metrics[args.selection_metric])
+        if val_score > best_val_score:
+            best_val_score = val_score
             torch.save(model.state_dict(), out_dir / "best_model.pt")
 
     torch.save(model.state_dict(), out_dir / "last_model.pt")
@@ -242,17 +271,46 @@ def main():
         timesteps=test_ts,
     )
 
+    val_thresholds = threshold_sweep(logits_val, y_val.numpy())
+    test_thresholds = threshold_sweep(logits_test, y_test.numpy())
+    val_calibration = compute_calibration_summary(logits_val, y_val.numpy())
+    test_calibration = compute_calibration_summary(logits_test, y_test.numpy())
     test_metrics = compute_binary_metrics(logits_test, y_test.numpy())
     final_metrics = {
         "metrics_history": metrics_history,
-        "best_val_auroc": best_val_auroc,
+        "best_val_score": best_val_score,
+        "best_val_metric_name": args.selection_metric,
+        "best_val_auroc": max((row["val_auroc"] for row in metrics_history), default=0.0),
+        "best_val_auprc": max((row["val_auprc"] for row in metrics_history), default=0.0),
+        "best_val_f1": max((row["val_f1"] for row in metrics_history), default=0.0),
         "test_metrics": test_metrics,
+        "val_threshold_sweep": val_thresholds,
+        "test_threshold_sweep": test_thresholds,
+        "val_calibration": val_calibration,
+        "test_calibration": test_calibration,
     }
     with open(out_dir / "metrics.json", "w") as f:
         json.dump(final_metrics, f, indent=2)
 
+    summary = {
+        "run_dir": str(out_dir),
+        "feature_fields": config["feature_fields"],
+        "decision_only": args.decision_only,
+        "selection_metric": args.selection_metric,
+        "best_val_score": best_val_score,
+        "test_auroc": test_metrics["auroc"],
+        "test_auprc": test_metrics["auprc"],
+        "test_f1": test_metrics["f1"],
+        "best_val_f1_threshold": val_thresholds["best_f1"].get("threshold"),
+        "best_val_balanced_accuracy_threshold": val_thresholds["best_balanced_accuracy"].get("threshold"),
+        "test_ece": test_calibration["ece"],
+        "test_brier_score": test_calibration["brier_score"],
+    }
+    with open(out_dir / "summary.json", "w") as f:
+        json.dump(summary, f, indent=2)
+
     logger.info(
-        f"Done. Best val AUROC={best_val_auroc:.4f}. "
+        f"Done. Best val {args.selection_metric.upper()}={best_val_score:.4f}. "
         f"Test AUROC={test_metrics['auroc']:.4f} F1={test_metrics['f1']:.4f}"
     )
 
