@@ -80,6 +80,7 @@ def load_failure_dataset(
     feature_field: str = "feat_decoder_mean",
     feature_fields: list[str] | None = None,
     label_field: str = "failure_within_k",
+    decision_only: bool = False,
     mock: bool = False,
     mock_num_episodes: int = 50,
     mock_timesteps_per_episode: int = 40,
@@ -155,19 +156,58 @@ def load_failure_dataset(
     if np.any(~np.isfinite(labels)):
         raise ValueError("Labels contain NaN or Inf")
 
+    original_n = n
+    if decision_only:
+        if "new_chunk_generated" in data:
+            decision_mask = np.asarray(data["new_chunk_generated"]).astype(bool)
+        elif "chunk_step_idx" in data:
+            decision_mask = np.asarray(data["chunk_step_idx"], dtype=np.int64) == 0
+        else:
+            raise ValueError(
+                "decision_only=True requires 'new_chunk_generated' or 'chunk_step_idx' in the dataset"
+            )
+
+        decision_indices = np.flatnonzero(decision_mask)
+        labels = _aggregate_decision_labels(labels, episode_ids, decision_indices)
+        features = features[decision_mask]
+        episode_ids = episode_ids[decision_mask]
+        timesteps = timesteps[decision_mask]
+        n = len(labels)
+
     input_dim = features.shape[1]
     metadata["feature_field"] = fields_to_use[0] if len(fields_to_use) == 1 else None
     metadata["feature_fields"] = fields_to_use
     metadata["label_field"] = label_field
+    metadata["decision_only"] = decision_only
+    metadata["decision_label_mode"] = "chunk_max" if decision_only else "per_step"
     metadata["input_dim"] = input_dim
     metadata["n_samples"] = n
+    metadata["original_n_samples"] = original_n
 
     logger.info(
         f"Loaded dataset: {n} samples, input_dim={input_dim}, "
-        f"positives={int(labels.sum())}, negatives={n - int(labels.sum())}"
+        f"positives={int(labels.sum())}, negatives={n - int(labels.sum())}, "
+        f"decision_only={decision_only}"
     )
 
     return features, labels, episode_ids, timesteps, input_dim, metadata
+
+
+def _aggregate_decision_labels(
+    labels: np.ndarray,
+    episode_ids: np.ndarray,
+    decision_indices: np.ndarray,
+) -> np.ndarray:
+    """Move per-step labels onto chunk-decision rows by max-pooling within each chunk."""
+    aggregated = np.zeros(len(decision_indices), dtype=np.float32)
+    for out_idx, start_idx in enumerate(decision_indices):
+        if out_idx + 1 < len(decision_indices) and episode_ids[decision_indices[out_idx + 1]] == episode_ids[start_idx]:
+            end_idx = decision_indices[out_idx + 1]
+        else:
+            same_episode = np.flatnonzero(episode_ids == episode_ids[start_idx])
+            end_idx = int(same_episode[-1]) + 1
+        aggregated[out_idx] = float(np.max(labels[start_idx:end_idx]))
+    return aggregated
 
 
 def _create_mock_dataset(
