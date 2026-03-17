@@ -42,9 +42,12 @@ logger = logging.getLogger(__name__)
 SCRIPT_DIR = Path(__file__).resolve().parent
 RESEARCH_DIR = SCRIPT_DIR.parent.parent
 sys.path.insert(0, str(RESEARCH_DIR))
+sys.path.insert(0, str(RESEARCH_DIR / "faact"))
 
 from failure_prediction.utils.failure_dataset_logger import FailureDatasetLogger
 from failure_prediction.utils.success_inference import infer_episode_outcome
+from faact.backbone.factory import make_backbone_wrapper
+from faact.backbone.features import ACTION_PREFIX_STEPS, merge_feature_dicts, tensor_features_to_numpy
 
 
 def extract_obs_images(obs: dict) -> dict[str, np.ndarray]:
@@ -172,7 +175,7 @@ def load_policy_and_processors(checkpoint_path: str, device: str, policy_type: s
 
 # Env obs -> policy format: pixels -> (1,C,H,W) float [0,1], agent_pos -> state
 def preprocess_obs(obs: dict, task_desc: str | None = None, policy_type: str = "act"):
-    """Build obs dict for ACT, or transition for π₀ (with task in complementary_data)."""
+    """Build the flat obs batch expected by LeRobot preprocessors."""
     result = {}
 
     if "pixels" in obs:
@@ -197,9 +200,7 @@ def preprocess_obs(obs: dict, task_desc: str | None = None, policy_type: str = "
         result["observation.state"] = state
 
     if policy_type == "pi0" and task_desc:
-        from lerobot.processor.converters import create_transition
-        task = task_desc if task_desc.endswith("\n") else f"{task_desc}\n"
-        return create_transition(observation=result, complementary_data={"task": task})
+        result["task"] = task_desc if task_desc.endswith("\n") else f"{task_desc}\n"
     return result
 
 
@@ -280,22 +281,16 @@ def predict_action_chunk_with_features(policy, obs_processed, policy_type: str =
     return _predict_act_with_features(policy, obs_processed)
 
 
-# encoder_out -> first token only; decoder_out -> mean over chunk. action_chunk_mean for π₀.
-def features_to_numpy(features: dict[str, torch.Tensor]) -> dict[str, np.ndarray]:
-    result = {}
-    for key, val in features.items():
-        v = val.detach().cpu()
-        if key == "encoder_out":
-            result["encoder_latent_token"] = v[:, 0, :].squeeze(0).numpy()
-        elif key == "decoder_out":
-            result["decoder_mean"] = v.mean(dim=1).squeeze(0).numpy()
-        elif key == "latent_sample":
-            result["latent_sample"] = v.squeeze(0).numpy()
-        elif key == "action_chunk_mean":
-            result["action_chunk_mean"] = v.squeeze(0).numpy()  # π₀ fallback
-        else:
-            result[key] = v.squeeze(0).numpy()
-    return result
+def features_to_numpy(
+    features: dict[str, torch.Tensor],
+    action_chunk: torch.Tensor | np.ndarray | None = None,
+    chunk_step_idx: int = 0,
+) -> dict[str, np.ndarray]:
+    return merge_feature_dicts(
+        tensor_features_to_numpy(features),
+        action_chunk,
+        chunk_step_idx=chunk_step_idx,
+    )
 
 
 def _default_task_desc(task_id: str) -> str:
@@ -322,14 +317,17 @@ def run_collection(args):
             f"Environment package '{pkg}' not found. Install with: pip install gym-{args.env_type}"
         ) from e
 
-    logger.info(f"Loading {args.policy_type} policy from {args.checkpoint}")
-    policy, preprocessor, postprocessor = load_policy_and_processors(
-        args.checkpoint, args.device, policy_type=args.policy_type
+    logger.info(f"Loading {args.policy_type} wrapper from {args.checkpoint}")
+    backbone = make_backbone_wrapper(
+        args.policy_type,
+        args.checkpoint,
+        device=args.device,
+        task_desc=args.task_desc or None,
     )
 
-    chunk_size = getattr(policy.config, "chunk_size", getattr(policy.config, "n_action_steps", 100))
-    n_action_steps = getattr(policy.config, "n_action_steps", chunk_size)
-    logger.info(f"Policy loaded: chunk_size={chunk_size}, n_action_steps={n_action_steps}")
+    chunk_size = backbone.chunk_size
+    n_action_steps = backbone.chunk_size
+    logger.info(f"Wrapper loaded: chunk_size={chunk_size}, n_action_steps={n_action_steps}")
 
     logger.info(f"Creating environment: {args.env_type}/{args.task}")
     env = make_single_env(args.task, args.env_type, args.max_steps)
@@ -374,7 +372,7 @@ def run_collection(args):
             seed=ep_seed,
         )
 
-        policy.reset()
+        backbone.reset(task_spec=args.task_desc or None)
         raw_obs, info = env.reset(seed=ep_seed)
 
         episode_rewards = []
@@ -384,7 +382,7 @@ def run_collection(args):
         episode_truncated = []
 
         current_chunk = None
-        current_features = None
+        current_features_raw = {}
         chunk_step_idx = 0
 
         max_ep_steps = env.spec.max_episode_steps or 400
@@ -395,29 +393,31 @@ def run_collection(args):
         step = 0
 
         while not done and step < max_ep_steps:
-            obs_dict = preprocess_obs(raw_obs, task_desc=args.task_desc, policy_type=args.policy_type)
-            obs_processed = preprocessor(obs_dict)
-
-            # Request new chunk when we've exhausted the current one (chunk_size actions, n_action_steps per rollout)
             need_new_chunk = (current_chunk is None) or (chunk_step_idx >= n_action_steps)
 
             if need_new_chunk:
-                action_chunk, features = predict_action_chunk_with_features(
-                    policy, obs_processed, policy_type=args.policy_type
+                proposal = backbone.propose_chunk(
+                    raw_obs,
+                    context={"task": args.task_desc} if args.task_desc else None,
+                    return_features=args.save_embeddings,
                 )
-                current_chunk = action_chunk
-                current_features = features_to_numpy(features) if args.save_embeddings else None
+                current_chunk = np.asarray(proposal.actions, dtype=np.float32)
+                current_features_raw = (
+                    dict(proposal.features.raw)
+                    if proposal.features is not None and proposal.features.raw is not None
+                    else {}
+                )
                 chunk_step_idx = 0
                 new_chunk = True
             else:
                 new_chunk = False
 
-            action = current_chunk[:, chunk_step_idx]
-            action = postprocessor(action)
-
-            action_np = action.detach().cpu().numpy()
-            if action_np.ndim == 2:
-                action_np = action_np[0]
+            current_features = (
+                merge_feature_dicts(current_features_raw, current_chunk, chunk_step_idx=chunk_step_idx)
+                if args.save_embeddings
+                else None
+            )
+            action_np = np.asarray(current_chunk[chunk_step_idx], dtype=np.float32)
 
             raw_obs, reward, terminated, truncated, info = env.step(action_np)
 
@@ -433,9 +433,7 @@ def run_collection(args):
 
             chunk_np = None
             if args.save_action_chunks and current_chunk is not None:
-                chunk_np = current_chunk.detach().cpu().numpy()
-                if chunk_np.ndim == 3:
-                    chunk_np = chunk_np[0]
+                chunk_np = np.asarray(current_chunk, dtype=np.float32)
 
             dataset_logger.log_step(
                 timestep=step,
@@ -449,10 +447,10 @@ def run_collection(args):
                 obs_images=extract_obs_images(raw_obs) if args.save_images else None,
                 env_info=deepcopy(info),
                 predicted_action_chunk=chunk_np,
-                chunk_length=current_chunk.shape[1] if current_chunk is not None else None,
+                chunk_length=current_chunk.shape[0] if current_chunk is not None else None,
                 chunk_step_idx=chunk_step_idx,
                 new_chunk_generated=new_chunk,
-                features=current_features,  # same features for all steps in chunk (no new pred)
+                features=current_features,
             )
 
             episode_rewards.append(float(reward))
