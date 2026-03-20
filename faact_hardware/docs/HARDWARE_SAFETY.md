@@ -17,9 +17,12 @@ This folder is for supervised hardware research, not unattended deployment.
 2. Alarm-only mode with human review of alarm timing.
 3. Intervention mode with one-step budget and manual arming.
 
-## Current missing pieces
+## Implemented bridges (see `faact_hardware/so101_bridge.py`)
 
-- camera adapter for the physical setup
-- follower robot command bridge
-- state normalization matching the backbone wrapper
-- emergency-stop and heartbeat integration
+- LeRobot SO101 follower `get_observation` → FAACT `agent_pos` + `pixels`
+- Policy action vector → `RobotAction` dict + rate limiting via `LeRobotSO101FollowerRobot`
+
+## Still recommended
+
+- Verified E-stop and watchdog for your lab setup
+- Policy output scale check vs `safety.max_abs_action_value` and dataset normalization
