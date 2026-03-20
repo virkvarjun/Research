@@ -6,6 +6,16 @@ robot:
   teleop_port: /dev/tty.usbmodem5AE60798501
   teleop_id: so101_leader_1
   dry_run: true
+  connect_calibrate: false
+  control_hz: 10
+  max_relative_target: 0.2
+  use_degrees: true
+  cameras:
+    top:
+      index_or_path: 0
+      fps: 30
+      width: 640
+      height: 480
 
 backbone:
   policy_type: pi0

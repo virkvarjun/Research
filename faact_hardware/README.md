@@ -57,15 +57,27 @@ cd faact_hardware
 pip install -e .
 ```
 
-Run shadow mode:
+Run the unified hardware runner (dummy observations, safe dry-run robot):
+
+```bash
+# From Research/: include the `faact_hardware/` dir (package root), `faact/`, and `.`
+PYTHONPATH="faact_hardware:faact:." python faact_hardware/scripts/run_hardware_faact.py \
+  --config faact_hardware/configs/so101_transfer_cube.yaml
+```
+
+SO101 with real cameras + follower (supervised; start with `robot.dry_run: true`):
+
+```bash
+PYTHONPATH="faact_hardware:faact:." python faact_hardware/scripts/run_hardware_faact.py \
+  --config faact_hardware/configs/so101_transfer_cube.yaml --use-real-robot
+```
+
+See [docs/HARDWARE_ROLLOUT.md](docs/HARDWARE_ROLLOUT.md) for phased criteria.
+
+Legacy entry points:
 
 ```bash
 python scripts/run_shadow_mode.py --config configs/so101_transfer_cube.yaml
-```
-
-Run alarm-only mode:
-
-```bash
 python scripts/run_alarm_eval.py --config configs/so101_transfer_cube.yaml
 ```
 
