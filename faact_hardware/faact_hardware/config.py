@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +18,15 @@ class HardwareRobotConfig:
     teleop_port: str = "/dev/tty.usbmodem5AE60798501"
     teleop_id: str = "so101_leader_1"
     dry_run: bool = True
+    # SO101 follower (LeRobot): skip interactive calibration prompt when False and cal file exists
+    connect_calibrate: bool = False
+    # Passed to Feetech bus safety (see lerobot SOFollower.send_action)
+    max_relative_target: float | dict[str, float] | None = None
+    # Minimum seconds between follower commands (rate limit)
+    control_hz: float | None = 10.0
+    use_degrees: bool = True
+    # Map camera name -> {index_or_path, fps, width, height, ...} for OpenCVCameraConfig
+    cameras: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 @dataclass
@@ -81,14 +90,49 @@ def _section(data: dict[str, Any], key: str) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def _filter_dataclass(cls: type, section: dict[str, Any]) -> dict[str, Any]:
+    names = {f.name for f in fields(cls)}
+    return {k: v for k, v in section.items() if k in names}
+
+
 def load_config(path: str | Path) -> HardwareExperimentConfig:
     """Load a hardware experiment config from YAML."""
     with open(path) as f:
         data = yaml.safe_load(f) or {}
     return HardwareExperimentConfig(
-        robot=HardwareRobotConfig(**_section(data, "robot")),
-        backbone=BackboneConfig(**_section(data, "backbone")),
-        risk=RiskConfig(**_section(data, "risk")),
-        runtime=RuntimeConfig(**_section(data, "runtime")),
-        safety=SafetyConfig(**_section(data, "safety")),
+        robot=HardwareRobotConfig(**_filter_dataclass(HardwareRobotConfig, _section(data, "robot"))),
+        backbone=BackboneConfig(**_filter_dataclass(BackboneConfig, _section(data, "backbone"))),
+        risk=RiskConfig(**_filter_dataclass(RiskConfig, _section(data, "risk"))),
+        runtime=RuntimeConfig(**_filter_dataclass(RuntimeConfig, _section(data, "runtime"))),
+        safety=SafetyConfig(**_filter_dataclass(SafetyConfig, _section(data, "safety"))),
+    )
+
+
+def to_episode_runner_config(
+    runtime: RuntimeConfig,
+    backbone: BackboneConfig,
+    risk: RiskConfig,
+) -> Any:
+    """Build `faact.evaluation.online_runner.EpisodeRunnerConfig` from hardware YAML sections."""
+    from faact.evaluation.online_runner import EpisodeRunnerConfig
+
+    mode = "intervention" if runtime.mode == "intervene" else "baseline"
+    return EpisodeRunnerConfig(
+        mode=mode,
+        num_candidate_chunks=runtime.num_candidate_chunks,
+        obs_noise_std=runtime.obs_noise_std,
+        switch_margin=runtime.switch_margin,
+        replan_interval=backbone.replan_interval,
+        candidate_source=runtime.candidate_source,
+        action_noise_std=runtime.action_noise_std,
+        action_noise_prefix_steps=runtime.action_noise_prefix_steps,
+        task_desc=backbone.task_desc,
+        score_every_step=True,
+        cooldown_steps=risk.cooldown_steps,
+        max_interventions_per_episode=risk.max_interventions_per_episode,
+        boundary_only_intervention=risk.boundary_only_intervention,
+        min_candidate_l2_to_baseline=runtime.min_candidate_l2_to_baseline,
+        min_candidate_prefix_l2_to_baseline=runtime.min_candidate_prefix_l2_to_baseline,
+        max_candidate_tail_l2_to_baseline=runtime.max_candidate_tail_l2_to_baseline,
+        local_search_prefix_steps=runtime.local_search_prefix_steps,
     )
