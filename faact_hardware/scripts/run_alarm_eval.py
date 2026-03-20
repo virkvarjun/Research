@@ -14,6 +14,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 RESEARCH_DIR = SCRIPT_DIR.parent.parent
 sys.path.insert(0, str(RESEARCH_DIR))
 sys.path.insert(0, str(RESEARCH_DIR / "faact"))
+sys.path.insert(0, str(RESEARCH_DIR / "faact_hardware"))
 
 from faact.backbone.factory import make_backbone_wrapper
 from faact_hardware.config import load_config
@@ -32,9 +33,9 @@ class DummyObservationAdapter:
 
     def get_observation(self) -> dict[str, np.ndarray] | None:
         return {
-            "observation.state": np.zeros(14, dtype=np.float32),
+            "agent_pos": np.zeros(6, dtype=np.float32),
             "pixels": {
-                "top": np.zeros((224, 224, 3), dtype=np.uint8),
+                "top": np.zeros((480, 640, 3), dtype=np.uint8),
             },
         }
 
