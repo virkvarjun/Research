@@ -1,3 +1,4 @@
+# SO101 USB (saved): follower 5AE60583121, leader 5AE60798501 — see docs/SO101_USB_PORTS.md
 robot:
   robot_type: so101_follower
   robot_port: /dev/tty.usbmodem5AE60583121
@@ -20,7 +21,8 @@ robot:
 backbone:
   policy_type: pi0
   checkpoint: lerobot/pi0_base
-  device: cuda
+  # Apple Silicon Mac: use mps. NVIDIA: cuda. No GPU: cpu
+  device: mps
   task_desc: transfer the cube to the target
   replan_interval: 50
 

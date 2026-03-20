@@ -81,6 +81,10 @@ python scripts/run_shadow_mode.py --config configs/so101_transfer_cube.yaml
 python scripts/run_alarm_eval.py --config configs/so101_transfer_cube.yaml
 ```
 
+## USB ports (SO101)
+
+Saved mapping for this setup: [docs/SO101_USB_PORTS.md](docs/SO101_USB_PORTS.md) (also noted in `configs/so101_transfer_cube.yaml`).
+
 ## Integration target
 
 The intended backbone path is:
